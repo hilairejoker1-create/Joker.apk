@@ -1,4 +1,4 @@
-name: Build APK
+- name: Set up Android SDK
 
 on:
   repository_dispatch:
