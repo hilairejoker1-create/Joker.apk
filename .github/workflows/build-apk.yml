@@ -25,11 +25,11 @@ jobs:
           APP_NAME: ${{ github.event.client_payload.app_name }}
           PACKAGE_NAME: ${{ github.event.client_payload.package_name }}
           WEBSITE_URL: ${{ github.event.client_payload.website_url }}
-          VERSION: ${{ github.event.client_payload.version }}
-          VERSION_CODE: ${{ github.event.client_payload.version_code }}
-          PRIMARY_COLOR: ${{ github.event.client_payload.primary_color }}
-          BACKGROUND_COLOR: ${{ github.event.client_payload.background_color }}
-          ORIENTATION: ${{ github.event.client_payload.orientation }}
+          VERSION: ${{ github.event.client_payload.meta.version }}
+          VERSION_CODE: ${{ github.event.client_payload.meta.version_code }}
+          PRIMARY_COLOR: ${{ github.event.client_payload.meta.primary_color }}
+          BACKGROUND_COLOR: ${{ github.event.client_payload.meta.background_color }}
+          ORIENTATION: ${{ github.event.client_payload.meta.orientation }}
           ICON_URL: ${{ github.event.client_payload.icon_url }}
           OPT_SPLASH: ${{ github.event.client_payload.options.splash }}
           OPT_BACK: ${{ github.event.client_payload.options.back_button }}
