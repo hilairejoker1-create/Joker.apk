@@ -1,4 +1,9 @@
-- name: Set up Android SDK
+      - name: Set up Android SDK
+        run: |
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          yes | sdkmanager --licenses > /dev/null
+          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+          
 
 on:
   repository_dispatch:
