@@ -1,1 +1,60 @@
 name: Build APK
+on:
+  repository_dispatch:
+    types: [build-apk]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install tools
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0"
+          sudo apt-get update && sudo apt-get install -y imagemagick
+      - name: Generate Android project
+        env:
+          APP_NAME: ${{ github.event.client_payload.app_name }}
+          PACKAGE_NAME: ${{ github.event.client_payload.package_name }}
+          WEBSITE_URL: ${{ github.event.client_payload.website_url }}
+          VERSION: ${{ github.event.client_payload.meta.version }}
+          VERSION_CODE: ${{ github.event.client_payload.meta.version_code }}
+          PRIMARY_COLOR: ${{ github.event.client_payload.meta.primary_color }}
+          BACKGROUND_COLOR: ${{ github.event.client_payload.meta.background_color }}
+          ORIENTATION: ${{ github.event.client_payload.meta.orientation }}
+          ICON_URL: ${{ github.event.client_payload.icon_url }}
+          OPT_BACK: ${{ github.event.client_payload.options.back_button }}
+          OPT_EXTERNAL: ${{ github.event.client_payload.options.external_links }}
+          OPT_REFRESH: ${{ github.event.client_payload.options.pull_to_refresh }}
+          OPT_FULLSCREEN: ${{ github.event.client_payload.options.fullscreen }}
+        run: bash build-android.sh
+      - name: Sign
+        run: keytool -genkeypair -keystore release.keystore -alias appmaker -keyalg RSA -keysize 2048 -validity 10000 -storepass appmakerayiti -keypass appmakerayiti -dname "CN=Joker APK, O=Joker, C=HT"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Assemble
+        run: gradle assembleRelease --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ github.event.client_payload.build_id }}
+          path: app/build/outputs/apk/release/*.apk
+      - name: Return APK
+        env:
+          CALLBACK_URL: ${{ github.event.client_payload.callback_url }}
+          BUILD_ID: ${{ github.event.client_payload.build_id }}
+          SECRET: ${{ secrets.BUILD_CALLBACK_SECRET }}
+        run: |
+          APK=$(find app/build/outputs/apk/release -name '*.apk' | head -n1)
+          curl --fail-with-body --retry 2 -X POST "$CALLBACK_URL" -H "x-build-secret: $SECRET" -F "build_id=$BUILD_ID" -F status=success -F "file=@$APK;type=application/vnd.android.package-archive"
+      - name: Report failure
+        if: failure()
+        env:
+          CALLBACK_URL: ${{ github.event.client_payload.callback_url }}
+          BUILD_ID: ${{ github.event.client_payload.build_id }}
+          SECRET: ${{ secrets.BUILD_CALLBACK_SECRET }}
+        run: curl --fail-with-body -X POST "$CALLBACK_URL" -H "x-build-secret: $SECRET" -F "build_id=$BUILD_ID" -F status=failed -F 'error_message=La compilation Android a échoué.'
