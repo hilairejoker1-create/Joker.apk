@@ -57,4 +57,5 @@ jobs:
           CALLBACK_URL: ${{ github.event.client_payload.callback_url }}
           BUILD_ID: ${{ github.event.client_payload.build_id }}
           SECRET: ${{ secrets.BUILD_CALLBACK_SECRET }}
-        run: curl --fail-with-body -X POST "$CALLBACK_URL" -H "x-build-secret: $SECRET" -F "build_id=$BUILD_ID" -F status=failed -F 'error_message=La compilation Android a échoué.'
+        run: |
+          curl --fail-with-body -X POST "$CALLBACK_URL" -H "x-build-secret: $SECRET" -F "build_id=$BUILD_ID" -F status=failed -F 'error_message=La compilation Android a échoué.'
