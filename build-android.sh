@@ -12,7 +12,7 @@ include ":app"
 EOF
 
 cat > build.gradle <<'EOF'
-plugins { id 'com.android.application' version '8.5.2' apply false }
+plugins { id 'com.android.application' version '8.10.1' apply false }
 EOF
 
 cat > gradle.properties <<'EOF'
@@ -22,22 +22,23 @@ EOF
 
 cat > app/build.gradle <<EOF
 plugins { id 'com.android.application' }
+def signingData = new groovy.json.JsonSlurper().parse(rootProject.file('signing.json'))
 android {
     namespace '$PACKAGE_NAME'
-    compileSdk 34
+    compileSdk 36
     defaultConfig {
         applicationId "$PACKAGE_NAME"
         minSdk 23
-        targetSdk 34
+        targetSdk 36
         versionCode $VERSION_CODE
         versionName "$VERSION"
     }
     signingConfigs {
         release {
             storeFile file("../release.keystore")
-            storePassword "appmakerayiti"
+            storePassword signingData.password
             keyAlias "appmaker"
-            keyPassword "appmakerayiti"
+            keyPassword signingData.password
         }
     }
     buildTypes {
@@ -89,6 +90,7 @@ EOF
 cat > app/src/main/res/values/colors.xml <<EOF
 <resources>
     <color name="primary">$PRIMARY_COLOR</color>
+    <color name="secondary">${SECONDARY_COLOR:-$PRIMARY_COLOR}</color>
     <color name="background">$BACKGROUND_COLOR</color>
 </resources>
 EOF
@@ -118,9 +120,17 @@ import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
 import android.webkit.WebView;
+import android.app.AlertDialog;
+import android.widget.ImageView;
+import android.widget.FrameLayout;
+import org.json.JSONObject;
+import java.net.URL;
+import java.net.HttpURLConnection;
 import android.webkit.WebViewClient;
 import android.webkit.WebResourceRequest;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 
 public class MainActivity extends AppCompatActivity {
@@ -130,6 +140,33 @@ public class MainActivity extends AppCompatActivity {
     private static final boolean OPEN_EXTERNAL = $OPT_EXTERNAL;
     private static final boolean BACK_NAV = $OPT_BACK;
     private static final boolean PULL_REFRESH = $OPT_REFRESH;
+    private static final String UPDATE_URL = "${UPDATE_URL:-}";
+    private ImageView splash;
+    private static byte[] readResponse(java.io.InputStream input) throws java.io.IOException {
+        java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream(); byte[] buffer = new byte[4096]; int count;
+        while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count); input.close(); return output.toByteArray();
+    }
+    private void checkUpdate() {
+        if (UPDATE_URL.isEmpty()) return;
+        new Thread(() -> {
+            try {
+                HttpURLConnection connection = (HttpURLConnection) new URL(UPDATE_URL).openConnection();
+                connection.setConnectTimeout(10000); connection.setReadTimeout(10000);
+                JSONObject update = new JSONObject(new String(readResponse(connection.getInputStream()), java.nio.charset.StandardCharsets.UTF_8));
+                connection.disconnect();
+                if (update.optInt("version_code") <= $VERSION_CODE) return;
+                String link = update.optString("url");
+                if (!link.startsWith("https://")) return;
+                runOnUiThread(() -> new AlertDialog.Builder(this).setTitle("Mise à jour disponible")
+                    .setMessage("Une nouvelle version de votre application est prête.")
+                    .setNegativeButton("Plus tard", null).setPositiveButton("Mettre à jour", (dialog, which) -> {
+                        String installer = getPackageManager().getInstallerPackageName(getPackageName());
+                        Uri target = Uri.parse("com.android.vending".equals(installer) ? "https://play.google.com/store/apps/details?id=" + getPackageName() : link);
+                        startActivity(new Intent(Intent.ACTION_VIEW, target));
+                    }).show());
+            } catch (Exception ignored) { }
+        }).start();
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -154,6 +191,7 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 if (refreshLayout != null) refreshLayout.setRefreshing(false);
+                if (splash != null) splash.setVisibility(android.view.View.GONE);
             }
         });
 
@@ -168,7 +206,21 @@ public class MainActivity extends AppCompatActivity {
             setContentView(webView);
         }
 
+        if (${OPT_SPLASH:-true}) {
+            android.view.View content = PULL_REFRESH ? refreshLayout : webView;
+            ((android.view.ViewGroup) content.getParent()).removeView(content);
+            FrameLayout frame = new FrameLayout(this); frame.addView(content);
+            splash = new ImageView(this); splash.setImageResource(getApplicationInfo().icon);
+            splash.setBackgroundColor(Color.parseColor("$BACKGROUND_COLOR")); splash.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+            frame.addView(splash, new FrameLayout.LayoutParams(-1, -1)); setContentView(frame);
+            splash.postDelayed(() -> splash.setVisibility(android.view.View.GONE), 2500);
+        }
+        ViewCompat.setOnApplyWindowInsetsListener(findViewById(android.R.id.content), (view, insets) -> {
+            androidx.core.graphics.Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
+            view.setPadding(bars.left, bars.top, bars.right, bars.bottom); return insets;
+        });
         webView.loadUrl(START_URL);
+        checkUpdate();
     }
 
     @Override
@@ -183,7 +235,8 @@ public class MainActivity extends AppCompatActivity {
 EOF
 
 if [ -n "$ICON_URL" ]; then
-  curl -sL "$ICON_URL" -o /tmp/icon.png || true
+  curl --fail -sL "$ICON_URL" -o /tmp/icon.png
+  identify /tmp/icon.png >/dev/null
 fi
 if [ ! -s /tmp/icon.png ]; then
   convert -size 512x512 xc:"$PRIMARY_COLOR" /tmp/icon.png

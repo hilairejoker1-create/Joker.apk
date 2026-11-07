@@ -1,4 +1,4 @@
-name: Build APK
+name: Build APK or AAB
 on:
   repository_dispatch:
     types: [build-apk]
@@ -14,7 +14,7 @@ jobs:
       - name: Install tools
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0"
           sudo apt-get update && sudo apt-get install -y imagemagick
       - name: Generate Android project
         env:
@@ -24,6 +24,9 @@ jobs:
           VERSION: ${{ github.event.client_payload.meta.version }}
           VERSION_CODE: ${{ github.event.client_payload.meta.version_code }}
           PRIMARY_COLOR: ${{ github.event.client_payload.meta.primary_color }}
+          SECONDARY_COLOR: ${{ github.event.client_payload.meta.secondary_color }}
+          UPDATE_URL: ${{ github.event.client_payload.meta.update_url }}
+          OPT_SPLASH: ${{ github.event.client_payload.options.splash }}
           BACKGROUND_COLOR: ${{ github.event.client_payload.meta.background_color }}
           ORIENTATION: ${{ github.event.client_payload.meta.orientation }}
           ICON_URL: ${{ github.event.client_payload.icon_url }}
@@ -32,24 +35,33 @@ jobs:
           OPT_REFRESH: ${{ github.event.client_payload.options.pull_to_refresh }}
           OPT_FULLSCREEN: ${{ github.event.client_payload.options.fullscreen }}
         run: bash build-android.sh
-      - name: Sign
-        run: keytool -genkeypair -keystore release.keystore -alias appmaker -keyalg RSA -keysize 2048 -validity 10000 -storepass appmakerayiti -keypass appmakerayiti -dname "CN=Joker APK, O=Joker, C=HT"
+      - name: Restore or create signing key
+        env:
+          CALLBACK_URL: ${{ github.event.client_payload.callback_url }}
+          BUILD_ID: ${{ github.event.client_payload.build_id }}
+          SECRET: ${{ secrets.BUILD_CALLBACK_SECRET }}
+        run: python3 signing.py
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.9'
+          gradle-version: '8.11.1'
       - name: Assemble
-        run: gradle assembleRelease --no-daemon
+        env:
+          FORMAT: ${{ github.event.client_payload.meta.output_format }}
+        run: |
+          if [ "$FORMAT" = "aab" ]; then gradle bundleRelease --no-daemon; else gradle assembleRelease --no-daemon; fi
       - uses: actions/upload-artifact@v4
         with:
-          name: apk-${{ github.event.client_payload.build_id }}
-          path: app/build/outputs/apk/release/*.apk
-      - name: Return APK
+          name: android-${{ github.event.client_payload.build_id }}
+          path: |
+            app/build/outputs/apk/release/*.apk
+            app/build/outputs/bundle/release/*.aab
+      - name: Return Android file
         env:
           CALLBACK_URL: ${{ github.event.client_payload.callback_url }}
           BUILD_ID: ${{ github.event.client_payload.build_id }}
           SECRET: ${{ secrets.BUILD_CALLBACK_SECRET }}
         run: |
-          APK=$(find app/build/outputs/apk/release -name '*.apk' | head -n1)
+          APK=$(find app/build/outputs -type f \( -name '*.apk' -o -name '*.aab' \) | head -n1)
           curl --fail-with-body --retry 2 -X POST "$CALLBACK_URL" -H "x-build-secret: $SECRET" -F "build_id=$BUILD_ID" -F status=success -F "file=@$APK;type=application/vnd.android.package-archive"
       - name: Report failure
         if: failure()
