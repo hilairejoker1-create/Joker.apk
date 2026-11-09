@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 set -e
+APP_NAME_XML=$(python3 -c 'import os; from xml.sax.saxutils import escape; print(escape(os.environ["APP_NAME"]))')
+WEBSITE_JAVA=$(python3 -c 'import os,json; print(json.dumps(os.environ["WEBSITE_URL"])[1:-1])')
+UPDATE_JAVA=$(python3 -c 'import os,json; print(json.dumps(os.environ.get("UPDATE_URL", ""))[1:-1])')
 PKG_PATH=$(echo "$PACKAGE_NAME" | tr '.' '/')
 mkdir -p app/src/main/java/$PKG_PATH
 mkdir -p app/src/main/res/values app/src/main/res/mipmap-xxxhdpi app/src/main/res/drawable
@@ -43,7 +46,9 @@ android {
     }
     buildTypes {
         release {
-            minifyEnabled false
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
             signingConfig signingConfigs.release
         }
     }
@@ -64,14 +69,15 @@ cat > app/src/main/AndroidManifest.xml <<EOF
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
-        android:usesCleartextTraffic="true"
+        android:usesCleartextTraffic="false"
         android:theme="@style/AppTheme">
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:screenOrientation="$ORIENTATION"
             android:configChanges="orientation|screenSize|keyboardHidden">
             <intent-filter>
@@ -84,7 +90,7 @@ cat > app/src/main/AndroidManifest.xml <<EOF
 EOF
 
 cat > app/src/main/res/values/strings.xml <<EOF
-<resources><string name="app_name">$APP_NAME</string></resources>
+<resources><string name="app_name">$APP_NAME_XML</string></resources>
 EOF
 
 cat > app/src/main/res/values/colors.xml <<EOF
@@ -120,6 +126,11 @@ import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
 import android.webkit.WebView;
+import android.webkit.CookieManager;
+import android.webkit.WebChromeClient;
+import android.os.Message;
+import android.app.Dialog;
+import android.content.ActivityNotFoundException;
 import android.app.AlertDialog;
 import android.widget.ImageView;
 import android.widget.FrameLayout;
@@ -136,35 +147,63 @@ import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 public class MainActivity extends AppCompatActivity {
     private WebView webView;
     private SwipeRefreshLayout refreshLayout;
-    private static final String START_URL = "$WEBSITE_URL";
+    private static final String START_URL = "$WEBSITE_JAVA";
     private static final boolean OPEN_EXTERNAL = $OPT_EXTERNAL;
     private static final boolean BACK_NAV = $OPT_BACK;
     private static final boolean PULL_REFRESH = $OPT_REFRESH;
-    private static final String UPDATE_URL = "${UPDATE_URL:-}";
+    private static final String UPDATE_URL = "$UPDATE_JAVA";
     private ImageView splash;
+    private WebView loginWindow;
+    private Dialog loginDialog;
+    private long lastUpdateCheck;
+    private boolean updateChecking;
+
+    private boolean sameSite(Uri uri) {
+        Uri start = Uri.parse(START_URL);
+        return "https".equalsIgnoreCase(uri.getScheme()) && start.getHost() != null && start.getHost().equalsIgnoreCase(uri.getHost());
+    }
+    private boolean navigateLink(Uri uri, boolean gesture) {
+        String scheme = uri.getScheme();
+        if ("https".equalsIgnoreCase(scheme)) {
+            // Redirects remain in the same cookie/session context after first-party login.
+            if (sameSite(uri) || !gesture || !OPEN_EXTERNAL) return false;
+        } else if (!"mailto".equalsIgnoreCase(scheme) && !"tel".equalsIgnoreCase(scheme)) {
+            return true;
+        }
+        try { CookieManager.getInstance().flush(); startActivity(new Intent(Intent.ACTION_VIEW, uri)); }
+        catch (ActivityNotFoundException ignored) { }
+        return true;
+    }
+    private void closeLoginWindow() {
+        if (loginWindow != null) { loginWindow.stopLoading(); loginWindow.destroy(); loginWindow = null; }
+        if (loginDialog != null) { loginDialog.dismiss(); loginDialog = null; }
+        CookieManager.getInstance().flush();
+    }
     private static byte[] readResponse(java.io.InputStream input) throws java.io.IOException {
         java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream(); byte[] buffer = new byte[4096]; int count;
         while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count); input.close(); return output.toByteArray();
     }
     private void checkUpdate() {
-        if (UPDATE_URL.isEmpty()) return;
+        if (UPDATE_URL.isEmpty() || updateChecking || (lastUpdateCheck > 0 && android.os.SystemClock.elapsedRealtime() - lastUpdateCheck < 300000)) return;
+        updateChecking = true; lastUpdateCheck = android.os.SystemClock.elapsedRealtime();
         new Thread(() -> {
             try {
-                HttpURLConnection connection = (HttpURLConnection) new URL(UPDATE_URL).openConnection();
+                HttpURLConnection connection = (HttpURLConnection) new URL(UPDATE_URL + "&installed=$VERSION_CODE").openConnection();
                 connection.setConnectTimeout(10000); connection.setReadTimeout(10000);
                 JSONObject update = new JSONObject(new String(readResponse(connection.getInputStream()), java.nio.charset.StandardCharsets.UTF_8));
                 connection.disconnect();
+                if (!getPackageName().equals(update.optString("package_name"))) return;
                 if (update.optInt("version_code") <= $VERSION_CODE) return;
                 String link = update.optString("url");
                 if (!link.startsWith("https://")) return;
-                runOnUiThread(() -> new AlertDialog.Builder(this).setTitle("Mise à jour disponible")
+                runOnUiThread(() -> { if (isFinishing() || isDestroyed()) return; new AlertDialog.Builder(this).setTitle("Mise à jour disponible")
                     .setMessage("Une nouvelle version de votre application est prête.")
                     .setNegativeButton("Plus tard", null).setPositiveButton("Mettre à jour", (dialog, which) -> {
                         String installer = getPackageManager().getInstallerPackageName(getPackageName());
                         Uri target = Uri.parse("com.android.vending".equals(installer) ? "https://play.google.com/store/apps/details?id=" + getPackageName() : link);
                         startActivity(new Intent(Intent.ACTION_VIEW, target));
-                    }).show());
-            } catch (Exception ignored) { }
+                    }).show(); });
+            } catch (Exception ignored) { } finally { updateChecking = false; }
         }).start();
     }
 
@@ -176,16 +215,38 @@ public class MainActivity extends AppCompatActivity {
         webView.setBackgroundColor(Color.parseColor("$BACKGROUND_COLOR"));
         webView.getSettings().setJavaScriptEnabled(true);
         webView.getSettings().setDomStorageEnabled(true);
+        CookieManager.getInstance().setAcceptCookie(true);
+        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, false);
+        webView.getSettings().setSupportMultipleWindows(true);
+        webView.setWebChromeClient(new WebChromeClient() {
+            @Override public boolean onCreateWindow(WebView view, boolean dialog, boolean userGesture, Message message) {
+                if (!userGesture || loginWindow != null) return false;
+                loginWindow = new WebView(MainActivity.this);
+                loginWindow.getSettings().setJavaScriptEnabled(true);
+                loginWindow.getSettings().setDomStorageEnabled(true);
+                CookieManager.getInstance().setAcceptThirdPartyCookies(loginWindow, false);
+                loginWindow.setWebViewClient(new WebViewClient() {
+                    @Override public boolean shouldOverrideUrlLoading(WebView child, WebResourceRequest request) {
+                        Uri uri = request.getUrl();
+                        return !"https".equalsIgnoreCase(uri.getScheme());
+                    }
+                });
+                loginWindow.setWebChromeClient(new WebChromeClient() {
+                    @Override public void onCloseWindow(WebView window) { closeLoginWindow(); }
+                });
+                loginDialog = new Dialog(MainActivity.this);
+                loginDialog.setContentView(loginWindow);
+                loginDialog.setOnCancelListener(d -> closeLoginWindow());
+                loginDialog.show();
+                if (loginDialog.getWindow() != null) loginDialog.getWindow().setLayout(-1, -1);
+                ((WebView.WebViewTransport) message.obj).setWebView(loginWindow); message.sendToTarget(); return true;
+            }
+        });
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri uri = request.getUrl();
-                String host = Uri.parse(START_URL).getHost();
-                if (OPEN_EXTERNAL && host != null && uri.getHost() != null && !uri.getHost().contains(host)) {
-                    startActivity(new Intent(Intent.ACTION_VIEW, uri));
-                    return true;
-                }
-                return false;
+                return navigateLink(uri, request.hasGesture());
             }
 
             @Override
@@ -219,12 +280,30 @@ public class MainActivity extends AppCompatActivity {
             androidx.core.graphics.Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom); return insets;
         });
-        webView.loadUrl(START_URL);
-        checkUpdate();
+        if (savedInstanceState == null || webView.restoreState(savedInstanceState) == null) webView.loadUrl(START_URL);
     }
 
+    @Override protected void onResume() {
+        super.onResume(); if (webView != null) webView.onResume(); checkUpdate();
+    }
+    @Override protected void onPause() {
+        CookieManager.getInstance().flush(); if (webView != null) webView.onPause(); super.onPause();
+    }
+    @Override protected void onSaveInstanceState(Bundle state) {
+        if (webView != null) webView.saveState(state); super.onSaveInstanceState(state);
+    }
+    @Override protected void onDestroy() {
+        closeLoginWindow();
+        if (webView != null) {
+            webView.stopLoading();
+            if (webView.getParent() instanceof android.view.ViewGroup) ((android.view.ViewGroup) webView.getParent()).removeView(webView);
+            webView.destroy(); webView = null;
+        }
+        super.onDestroy();
+    }
     @Override
     public void onBackPressed() {
+        if (loginWindow != null) { if (loginWindow.canGoBack()) loginWindow.goBack(); else closeLoginWindow(); return; }
         if (BACK_NAV && webView.canGoBack()) {
             webView.goBack();
         } else {

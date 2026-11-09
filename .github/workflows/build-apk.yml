@@ -49,19 +49,25 @@ jobs:
           FORMAT: ${{ github.event.client_payload.meta.output_format }}
         run: |
           if [ "$FORMAT" = "aab" ]; then gradle bundleRelease --no-daemon; else gradle assembleRelease --no-daemon; fi
+      - name: Name Joker files
+        env:
+          BUILD_ID: ${{ github.event.client_payload.build_id }}
+          VERSION_CODE: ${{ github.event.client_payload.meta.version_code }}
+        run: |
+          mkdir -p joker-output
+          FILE=$(find app/build/outputs -type f \( -name '*.apk' -o -name '*.aab' \) | head -n1)
+          cp "$FILE" "joker-output/Joker-${BUILD_ID:0:8}-v${VERSION_CODE}.${FILE##*.}"
       - uses: actions/upload-artifact@v4
         with:
-          name: android-${{ github.event.client_payload.build_id }}
-          path: |
-            app/build/outputs/apk/release/*.apk
-            app/build/outputs/bundle/release/*.aab
+          name: Joker-${{ github.event.client_payload.build_id }}
+          path: joker-output/*
       - name: Return Android file
         env:
           CALLBACK_URL: ${{ github.event.client_payload.callback_url }}
           BUILD_ID: ${{ github.event.client_payload.build_id }}
           SECRET: ${{ secrets.BUILD_CALLBACK_SECRET }}
         run: |
-          APK=$(find app/build/outputs -type f \( -name '*.apk' -o -name '*.aab' \) | head -n1)
+          APK=$(find joker-output -type f | head -n1)
           curl --fail-with-body --retry 2 -X POST "$CALLBACK_URL" -H "x-build-secret: $SECRET" -F "build_id=$BUILD_ID" -F status=success -F "file=@$APK;type=application/vnd.android.package-archive"
       - name: Report failure
         if: failure()
